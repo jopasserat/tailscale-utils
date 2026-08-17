@@ -124,8 +124,12 @@ launch_session() {
   exec mullvad-exclude bash --rcfile <(cat <<RC
 export TS_SOCK="${sock}"
 echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${SOCKS_PORT}) ---"
+# Prime sudo NOW, in the foreground: the backgrounded tailscaled below has its
+# output redirected, so a sudo password prompt there would silently hang/fail.
+sudo -v || echo "WARNING: sudo auth failed; tailscaled will not start."
 sudo tailscaled --tun=userspace-networking --socks5-server=localhost:${SOCKS_PORT} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
-sleep 1
+for _ in \$(seq 1 20); do [ -S "${sock}" ] && break; sleep 0.5; done
+[ -S "${sock}" ] || echo "WARNING: tailscaled socket never appeared; check ${log}"
 echo "Bringing Tailscale up (login URL appears only on first registration):"
 sudo tailscale --socket="${sock}" up ${up_args}
 echo ""
