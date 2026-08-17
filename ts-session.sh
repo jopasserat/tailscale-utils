@@ -38,6 +38,26 @@
 # Each concurrent session gets its own SOCKS5 port automatically (1055, 1056…).
 #
 # ---------------------------------------------------------------------------
+# NO ROOT: the session daemon runs as YOUR USER (and the one limitation)
+# ---------------------------------------------------------------------------
+# Userspace-networking mode needs no TUN device, so the session tailscaled
+# runs unprivileged: no sudo password at start, and, crucially, a RELIABLE
+# teardown. (The old sudo-based version orphaned root daemons whenever the
+# session outlived sudo's 15-minute credential window: the exit trap's
+# `sudo pkill` hit a password prompt inside a dying shell and failed.)
+#
+# LIMITATION: a non-root tailscaled cannot run the Tailscale SSH *server*,
+# so other nodes can't `tailscale ssh` INTO this machine during a session.
+# Reaching OUT (tssh/kssh to peers) is unaffected, which is the use case here.
+#
+# GOING BACK TO ROOT (if you ever need inbound Tailscale SSH): in
+# launch_session(), prefix the `tailscaled`, `tailscale ... up`, and the
+# trap's `tailscale ... down`/`pkill` with sudo, and hand the state dirs to
+# root (sudo chown -R root:root ~/.config/ts-session/<name>-state). Be aware
+# that teardown then needs a live sudo timestamp at exit again, the flaw
+# described above returns.
+#
+# ---------------------------------------------------------------------------
 # MODES
 # ---------------------------------------------------------------------------
 #   ./ts-session.sh [account]           Option A: excluded shell using the
@@ -177,15 +197,12 @@ ts()   { command tailscale --socket="\$TS_SOCK" "\$@"; }
 tssh() { command tailscale --socket="\$TS_SOCK" ssh "\$@"; }
 kssh() { command ssh -o ProxyCommand="nc -X 5 -x localhost:\$TS_SOCKS_PORT %h %p" "\$@"; }
 export -f ts tssh kssh
-echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${socks_port}) ---"
-# Prime sudo NOW, in the foreground: the backgrounded tailscaled below has its
-# output redirected, so a sudo password prompt there would silently hang/fail.
-sudo -v || echo "WARNING: sudo auth failed; tailscaled will not start."
-sudo tailscaled --tun=userspace-networking --socks5-server=localhost:${socks_port} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
+echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${socks_port}, no root) ---"
+tailscaled --tun=userspace-networking --socks5-server=localhost:${socks_port} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
 for _ in \$(seq 1 20); do [ -S "${sock}" ] && break; sleep 0.5; done
 [ -S "${sock}" ] || echo "WARNING: tailscaled socket never appeared; check ${log}"
 echo "Bringing Tailscale up (login URL appears only on first registration):"
-sudo tailscale --socket="${sock}" up ${up_args}
+tailscale --socket="${sock}" up ${up_args}
 echo ""
 tailscale --socket="${sock}" status || true
 printf 'TS_SESSION_NAME=%s\nTS_SOCK=%s\nTS_SOCKS_PORT=%s\nTS_SESSION_PID=%s\n' \
@@ -198,7 +215,7 @@ echo "    ts <cmd>                     tailscale cmd on this session (ts status)
 echo "===================================================================="
 echo ""
 echo "Type 'exit' when done; the session tailscaled is stopped automatically."
-trap 'echo "--- tearing down session tailscaled ---"; sudo tailscale --socket="${sock}" down 2>/dev/null; sudo pkill -f "tailscaled.*${sock}" 2>/dev/null; rm -f "${sock}" "${log}" "${envfile}"; ${teardown_state}' EXIT
+trap 'echo "--- tearing down session tailscaled ---"; tailscale --socket="${sock}" down 2>/dev/null; pkill -f "tailscaled.*${sock}" 2>/dev/null; rm -f "${sock}" "${log}" "${envfile}"; ${teardown_state}' EXIT
 RC
 )
 }
@@ -245,7 +262,7 @@ case "$mode" in
     fi
     SESSION_STATEDIR="/tmp/ts-session-$$-state"
     UP_ARGS=""; [ -n "$AUTHKEY" ] && UP_ARGS="--auth-key=${AUTHKEY}"
-    launch_session "robust-$$" "$SESSION_STATEDIR" "$UP_ARGS" "sudo rm -rf \"$SESSION_STATEDIR\""
+    launch_session "robust-$$" "$SESSION_STATEDIR" "$UP_ARGS" "rm -rf \"$SESSION_STATEDIR\""
     ;;
 
   --persist)
@@ -258,6 +275,14 @@ case "$mode" in
        [ -S "$(sed -n 's/^TS_SOCK=//p' "$SESSION_DIR/${name}.env")" ]; then
       echo "==> WARNING: a '$name' session already looks LIVE. Instead of a second"
       echo "    session, just run tssh/kssh from this terminal, they'll find it."
+    fi
+    # Migration from the old sudo-based version: root-owned state would make
+    # the user-run tailscaled fail (or worse, silently re-register).
+    if [ -e "$STATEDIR" ] && [ ! -O "$STATEDIR" ]; then
+      echo "==> '$name' state dir is not owned by you (left by the old sudo-based" >&2
+      echo "    version of this script). Reclaim it once, then re-run:" >&2
+      echo "        sudo chown -R \"\$USER\" '$STATEDIR'" >&2
+      exit 1
     fi
     AUTHKEY=""
     if [ -s "$STATEDIR/tailscaled.state" ]; then

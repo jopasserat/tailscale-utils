@@ -36,6 +36,12 @@ exit                             # teardown; identity persists
 live sessions; `--robust` gives a disposable session instead; the header
 comments in `ts-session.sh` cover all modes.
 
+The session daemon runs **as your user** (userspace networking needs no
+root): no sudo password, and teardown can't be stranded by an expired sudo
+prompt. The trade-off: this machine can't accept inbound `tailscale ssh`
+during a session — outbound only. If you ever need inbound, the header of
+`ts-session.sh` describes the path back to a root daemon.
+
 ## Files
 
 - `ts-session.sh` — session launcher (all modes documented in its header)
