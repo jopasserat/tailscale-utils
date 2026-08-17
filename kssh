@@ -40,7 +40,7 @@ if ts_find_session "$session"; then
   exec ssh -o ProxyCommand="nc -X 5 -x localhost:${TS_SOCKS_PORT} %h %p" "$@"
 fi
 if [ -n "$session" ]; then
-  echo "kssh: no live session named '$session'. Start it: ts-session.sh --persist $session" >&2
+  echo "kssh: no live session named '$session'. Start it: ts-session --persist $session" >&2
   exit 1
 fi
 echo "==> kssh: no ts-session found; plain ssh (needs the system daemon's tailscale0 to route)." >&2

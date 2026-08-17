@@ -30,8 +30,9 @@
 #                        (no checks; use the 100.x IP, MagicDNS won't resolve)
 #   ts <cmd>             any tailscale command on this session (ts status ...)
 #
-# Put the standalone ones on PATH once:
+# Put the standalone ones on PATH once, plus this script as the entrypoint:
 #   ln -s "$(pwd)"/{tssh,kssh} ~/.local/bin/
+#   ln -s "$(pwd)/ts-session.sh" ~/.local/bin/ts-session
 # With several sessions live at once, pick one: tssh -s work user@peer
 # (or TS_SESSION=<name>); default is the most recently started live session.
 # Each concurrent session gets its own SOCKS5 port automatically (1055, 1056…).

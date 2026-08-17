@@ -35,7 +35,7 @@ if ts_find_session "$session"; then
   exec tailscale --socket="$TS_SOCK" ssh "$@"
 fi
 if [ -n "$session" ]; then
-  echo "tssh: no live session named '$session'. Start it: ts-session.sh --persist $session" >&2
+  echo "tssh: no live session named '$session'. Start it: ts-session --persist $session" >&2
   exit 1
 fi
 if systemctl is-active --quiet tailscaled 2>/dev/null; then
@@ -43,5 +43,5 @@ if systemctl is-active --quiet tailscaled 2>/dev/null; then
   exec tailscale ssh "$@"
 fi
 echo "tssh: no live ts-session and no system tailscaled daemon." >&2
-echo "      Start a session first:  ts-session.sh --persist <name>" >&2
+echo "      Start a session first:  ts-session --persist <name>" >&2
 exit 1
