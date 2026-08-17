@@ -78,7 +78,18 @@
 set -uo pipefail
 
 SESSION_SOCK="/tmp/ts-session-$$.sock"
-SOCKS_PORT="1055"
+SOCKS_PORT="1055"                                   # base; bumped if taken
+
+# First free port at or above $SOCKS_PORT, so concurrent sessions don't clash.
+pick_socks_port() {
+  local p="$SOCKS_PORT"
+  if command -v ss >/dev/null 2>&1; then
+    while ss -Hltn 2>/dev/null | awk '{print $4}' | grep -q ":${p}\$"; do
+      p=$((p + 1))
+    done
+  fi
+  echo "$p"
+}
 
 if ! command -v mullvad-exclude >/dev/null 2>&1; then
   echo "mullvad-exclude not found. Is the Mullvad app installed?" >&2
@@ -120,14 +131,16 @@ pick_account() {
 launch_session() {
   local statedir="$1" up_args="$2" teardown_state="$3"
   local sock="$SESSION_SOCK" log="/tmp/ts-session-$$.log"
+  local socks_port
+  socks_port="$(pick_socks_port)"
   mkdir -p "$(dirname "$statedir")"
   exec mullvad-exclude bash --rcfile <(cat <<RC
 export TS_SOCK="${sock}"
-echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${SOCKS_PORT}) ---"
+echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${socks_port}) ---"
 # Prime sudo NOW, in the foreground: the backgrounded tailscaled below has its
 # output redirected, so a sudo password prompt there would silently hang/fail.
 sudo -v || echo "WARNING: sudo auth failed; tailscaled will not start."
-sudo tailscaled --tun=userspace-networking --socks5-server=localhost:${SOCKS_PORT} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
+sudo tailscaled --tun=userspace-networking --socks5-server=localhost:${socks_port} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
 for _ in \$(seq 1 20); do [ -S "${sock}" ] && break; sleep 0.5; done
 [ -S "${sock}" ] || echo "WARNING: tailscaled socket never appeared; check ${log}"
 echo "Bringing Tailscale up (login URL appears only on first registration):"
@@ -139,7 +152,7 @@ echo "=== HOW TO SSH IN THIS SESSION (userspace mode) ==="
 echo "Preferred, proxies through the session daemon:"
 echo "    tailscale --socket=\$TS_SOCK ssh user@<peer-name-or-100.x-ip>"
 echo "Fallback via the SOCKS5 proxy:"
-echo "    ssh -o ProxyCommand='nc -X 5 -x localhost:${SOCKS_PORT} %h %p' user@<100.x-ip>"
+echo "    ssh -o ProxyCommand='nc -X 5 -x localhost:${socks_port} %h %p' user@<100.x-ip>"
 echo "==================================================="
 echo ""
 echo "Type 'exit' when done; the session tailscaled is stopped automatically."
