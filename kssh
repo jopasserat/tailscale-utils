@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# kssh - SSH to a tailnet peer with YOUR OWN SSH KEYS (no Tailscale-managed
+# auth, no browser checks), tunnelled through the session's SOCKS5 proxy.
+# The session tailscaled runs in userspace mode (no tun device), so plain
+# `ssh 100.x.y.z` can't route; this wraps ssh with the right ProxyCommand.
+#
+# Usage:  kssh [-s <session>] <user@100.x.y.z> [args...]
+#
+# Use the peer's 100.x IP (or a Host alias from your ~/.ssh/config): MagicDNS
+# names don't resolve outside the tailscale client. Finds a live ts-session.sh
+# session automatically, from any terminal (pick one with -s <name> or
+# TS_SESSION=<name>). With no session it falls back to plain ssh, which works
+# when the system tailscaled daemon provides a real tailscale0 device.
+#
+# Install once so it's on PATH from every terminal:
+#   ln -s "$(pwd)/kssh" ~/.local/bin/kssh
+
+set -uo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=ts-session-lib.sh
+. "$here/ts-session-lib.sh"
+
+session=""
+if [ "${1:-}" = "-s" ]; then
+  session="${2:?kssh: -s needs a session name}"
+  shift 2
+fi
+if [ $# -lt 1 ]; then
+  echo "usage: kssh [-s <session>] <user@100.x.y.z> [args...]" >&2
+  exit 2
+fi
+
+if ts_find_session "$session"; then
+  # TS_SOCKS_PORT can be empty if only TS_SOCK was inherited (e.g. exported by
+  # hand); 1055 is ts-session.sh's base port.
+  : "${TS_SOCKS_PORT:=1055}"
+  echo "==> kssh via session '${TS_SESSION_NAME:-current}' (SOCKS5 localhost:${TS_SOCKS_PORT})" >&2
+  exec ssh -o ProxyCommand="nc -X 5 -x localhost:${TS_SOCKS_PORT} %h %p" "$@"
+fi
+if [ -n "$session" ]; then
+  echo "kssh: no live session named '$session'. Start it: ts-session.sh --persist $session" >&2
+  exit 1
+fi
+echo "==> kssh: no ts-session found; plain ssh (needs the system daemon's tailscale0 to route)." >&2
+exec ssh "$@"

@@ -71,6 +71,23 @@ ask for a browser re-check roughly daily, or after network changes. That's an
 SSH-session check, not a node/key expiry, and `kssh` (your own keys via SOCKS)
 avoids it entirely.
 
+## The tssh / kssh helpers work from ANY terminal
+
+Inside a session shell, `tssh`, `kssh` and `ts` are functions wired to that
+session's socket, no `--socket=$TS_SOCK` copy-pasting. The standalone scripts
+in this repo do the same from any *other* terminal: a live session registers
+itself in `${XDG_RUNTIME_DIR:-/tmp}/ts-session/<name>.env`, and the scripts
+find it there (the daemon's unix socket and localhost SOCKS proxy are
+reachable from non-excluded shells too). Put them on PATH once:
+
+```bash
+ln -s "$(pwd)"/{tssh,kssh} ~/.local/bin/
+```
+
+With several sessions live at once, pick one with `tssh -s work ...` (or
+`TS_SESSION=work`); the default is the most recently started live
+session.
+
 ## Switching to a second tailnet (e.g. work)
 
 The two tailnets are fully separate identities. You don't "switch" a running

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# tssh - SSH to a tailnet peer using TAILSCALE-managed auth (web login,
+# infrequent; may occasionally re-prompt a browser "check mode" step).
+# Use kssh instead if you want your own SSH keys and no checks.
+#
+# Usage:  tssh [-s <session>] <user@peer-name-or-100.x-ip> [args...]
+#
+# Automatically finds a live ts-session.sh session, from any terminal: the
+# TS_SOCK of the current session shell, or the registry written by
+# ts-session.sh (pick one explicitly with -s <name> or TS_SESSION=<name>).
+# Falls back to the system tailscaled daemon if no session is running.
+#
+# Install once so it's on PATH from every terminal:
+#   ln -s "$(pwd)/tssh" ~/.local/bin/tssh
+
+set -uo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=ts-session-lib.sh
+. "$here/ts-session-lib.sh"
+
+session=""
+if [ "${1:-}" = "-s" ]; then
+  session="${2:?tssh: -s needs a session name}"
+  shift 2
+fi
+if [ $# -lt 1 ]; then
+  echo "usage: tssh [-s <session>] <user@peer> [args...]" >&2
+  exit 2
+fi
+
+if ts_find_session "$session"; then
+  echo "==> tssh via session '${TS_SESSION_NAME:-current}' (${TS_SOCK})" >&2
+  exec tailscale --socket="$TS_SOCK" ssh "$@"
+fi
+if [ -n "$session" ]; then
+  echo "tssh: no live session named '$session'. Start it: ts-session.sh --persist $session" >&2
+  exit 1
+fi
+if systemctl is-active --quiet tailscaled 2>/dev/null; then
+  echo "==> tssh: no ts-session found; using the SYSTEM tailscaled daemon." >&2
+  exec tailscale ssh "$@"
+fi
+echo "tssh: no live ts-session and no system tailscaled daemon." >&2
+echo "      Start a session first:  ts-session.sh --persist <name>" >&2
+exit 1

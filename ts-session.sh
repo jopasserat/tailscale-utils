@@ -13,9 +13,28 @@
 #
 # The excluded Tailscale daemon runs in USERSPACE mode (no tailscale0 device),
 # which is what lets it coexist with Mullvad without fighting over routes. The
-# catch: plain `ssh 100.x.y.z` won't route in userspace mode. Use `tailscale ssh`
-# (it proxies through the daemon) or the SOCKS5 proxy this script exposes on
-# localhost:1055. Both are printed inside every session.
+# catch: plain `ssh 100.x.y.z` won't route in userspace mode. Use the helpers
+# below instead; they wire up the daemon socket / SOCKS5 proxy for you.
+#
+# ---------------------------------------------------------------------------
+# HELPERS: tssh / kssh / ts (no more copy-pasting --socket=$TS_SOCK around)
+# ---------------------------------------------------------------------------
+# Inside every session shell these exist as functions; the standalone scripts
+# next to this one do the same FROM ANY TERMINAL by discovering the live
+# session in ${XDG_RUNTIME_DIR:-/tmp}/ts-session/ (localhost SOCKS and the
+# unix socket are reachable from non-excluded shells too):
+#
+#   tssh user@peer       SSH with TAILSCALE auth (web login; infrequent
+#                        browser "check mode" re-prompts possible)
+#   kssh user@100.x.y.z  SSH with YOUR OWN KEYS via the SOCKS5 proxy
+#                        (no checks; use the 100.x IP, MagicDNS won't resolve)
+#   ts <cmd>             any tailscale command on this session (ts status ...)
+#
+# Put the standalone ones on PATH once:
+#   ln -s "$(pwd)"/{tssh,kssh} ~/.local/bin/
+# With several sessions live at once, pick one: tssh -s work user@peer
+# (or TS_SESSION=<name>); default is the most recently started live session.
+# Each concurrent session gets its own SOCKS5 port automatically (1055, 1056…).
 #
 # ---------------------------------------------------------------------------
 # MODES
@@ -69,16 +88,22 @@
 # TYPICAL USE (Mullvad always on; system daemon disabled; reach out to peers)
 # ---------------------------------------------------------------------------
 #   ./ts-session.sh --persist home           # first run registers, later reuse
-#     tailscale --socket=$TS_SOCK ssh user@home-box
+#     tssh user@home-box                     # tailscale auth
+#     kssh user@100.x.y.z                    # your own ssh keys
 #     exit
 #   ./ts-session.sh --persist work
-#     tailscale --socket=$TS_SOCK ssh user@work-server
+#     tssh user@work-server
 #     exit
+#   # ...and from any OTHER terminal while a session is live:
+#   tssh user@home-box                       # standalone script, finds session
 
 set -uo pipefail
 
 SESSION_SOCK="/tmp/ts-session-$$.sock"
 SOCKS_PORT="1055"                                   # base; bumped if taken
+# Registry of live sessions, read by the standalone tssh/kssh scripts.
+# Keep in sync with ts_session_dir() in ts-session-lib.sh.
+SESSION_DIR="${XDG_RUNTIME_DIR:-/tmp}/ts-session"
 
 # First free port at or above $SOCKS_PORT, so concurrent sessions don't clash.
 pick_socks_port() {
@@ -127,15 +152,22 @@ pick_account() {
 }
 
 # --- launch an excluded userspace Tailscale session ------------------------
-# args: <statedir> <up_args> <teardown_state_cmd>
+# args: <name> <statedir> <up_args> <teardown_state_cmd>
 launch_session() {
-  local statedir="$1" up_args="$2" teardown_state="$3"
+  local name="$1" statedir="$2" up_args="$3" teardown_state="$4"
   local sock="$SESSION_SOCK" log="/tmp/ts-session-$$.log"
+  local envfile="${SESSION_DIR}/${name}.env"
   local socks_port
   socks_port="$(pick_socks_port)"
-  mkdir -p "$(dirname "$statedir")"
+  mkdir -p "$(dirname "$statedir")" "$SESSION_DIR"
   exec mullvad-exclude bash --rcfile <(cat <<RC
+export TS_SESSION_NAME="${name}"
 export TS_SOCK="${sock}"
+export TS_SOCKS_PORT="${socks_port}"
+ts()   { command tailscale --socket="\$TS_SOCK" "\$@"; }
+tssh() { command tailscale --socket="\$TS_SOCK" ssh "\$@"; }
+kssh() { command ssh -o ProxyCommand="nc -X 5 -x localhost:\$TS_SOCKS_PORT %h %p" "\$@"; }
+export -f ts tssh kssh
 echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${socks_port}) ---"
 # Prime sudo NOW, in the foreground: the backgrounded tailscaled below has its
 # output redirected, so a sudo password prompt there would silently hang/fail.
@@ -147,16 +179,17 @@ echo "Bringing Tailscale up (login URL appears only on first registration):"
 sudo tailscale --socket="${sock}" up ${up_args}
 echo ""
 tailscale --socket="${sock}" status || true
+printf 'TS_SESSION_NAME=%s\nTS_SOCK=%s\nTS_SOCKS_PORT=%s\nTS_SESSION_PID=%s\n' \
+  "${name}" "${sock}" "${socks_port}" "\$\$" > "${envfile}"
 echo ""
-echo "=== HOW TO SSH IN THIS SESSION (userspace mode) ==="
-echo "Preferred, proxies through the session daemon:"
-echo "    tailscale --socket=\$TS_SOCK ssh user@<peer-name-or-100.x-ip>"
-echo "Fallback via the SOCKS5 proxy:"
-echo "    ssh -o ProxyCommand='nc -X 5 -x localhost:${socks_port} %h %p' user@<100.x-ip>"
-echo "==================================================="
+echo "=== SSH IN THIS SESSION '${name}' (also from any other terminal) ==="
+echo "    tssh user@<peer-or-100.x>    Tailscale-managed auth (web login)"
+echo "    kssh user@<100.x-ip>         your own SSH keys, via SOCKS5 :${socks_port}"
+echo "    ts <cmd>                     tailscale cmd on this session (ts status)"
+echo "===================================================================="
 echo ""
 echo "Type 'exit' when done; the session tailscaled is stopped automatically."
-trap 'echo "--- tearing down session tailscaled ---"; sudo tailscale --socket="${sock}" down 2>/dev/null; sudo pkill -f "tailscaled.*${sock}" 2>/dev/null; rm -f "${sock}" "${log}"; ${teardown_state}' EXIT
+trap 'echo "--- tearing down session tailscaled ---"; sudo tailscale --socket="${sock}" down 2>/dev/null; sudo pkill -f "tailscaled.*${sock}" 2>/dev/null; rm -f "${sock}" "${log}" "${envfile}"; ${teardown_state}' EXIT
 RC
 )
 }
@@ -203,7 +236,7 @@ case "$mode" in
     fi
     SESSION_STATEDIR="/tmp/ts-session-$$-state"
     UP_ARGS=""; [ -n "$AUTHKEY" ] && UP_ARGS="--auth-key=${AUTHKEY}"
-    launch_session "$SESSION_STATEDIR" "$UP_ARGS" "sudo rm -rf \"$SESSION_STATEDIR\""
+    launch_session "robust-$$" "$SESSION_STATEDIR" "$UP_ARGS" "sudo rm -rf \"$SESSION_STATEDIR\""
     ;;
 
   --persist)
@@ -211,6 +244,12 @@ case "$mode" in
     keyfile_arg="${3:-}"
     STATEDIR="$HOME/.config/ts-session/${name}-state"
     echo "==> PERSIST mode: tailnet '$name', state kept at $STATEDIR"
+    # Two daemons on one statedir end badly; point at the live session instead.
+    if [ -e "$SESSION_DIR/${name}.env" ] &&
+       [ -S "$(sed -n 's/^TS_SOCK=//p' "$SESSION_DIR/${name}.env")" ]; then
+      echo "==> WARNING: a '$name' session already looks LIVE. Instead of a second"
+      echo "    session, just run tssh/kssh from this terminal, they'll find it."
+    fi
     AUTHKEY=""
     if [ -s "$STATEDIR/tailscaled.state" ]; then
       echo "==> Reusing stored '$name' identity (no re-auth needed)."
@@ -230,7 +269,7 @@ case "$mode" in
       fi
     fi
     UP_ARGS=""; [ -n "$AUTHKEY" ] && UP_ARGS="--auth-key=${AUTHKEY}"
-    launch_session "$STATEDIR" "$UP_ARGS" ""    # empty teardown = keep state
+    launch_session "$name" "$STATEDIR" "$UP_ARGS" ""   # empty teardown = keep state
     ;;
 
   --check)
