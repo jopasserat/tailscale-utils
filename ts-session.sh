@@ -87,6 +87,11 @@
 # SECURITY: never pass the raw key as an argument (it lands in shell history).
 # Use a key file (auto-found at ~/.ts/<name>.key, or pass a path) or TS_AUTHKEY.
 #
+# KEYS ARE ONE-SHOT: an auth key is only consulted on the FIRST --persist run
+# for a given <name> (registration). Once the identity exists in the state
+# dir, the key file is never read again, deleting ~/.ts/<name>.key is safe and
+# later runs cannot fail because of it.
+#
 # ---------------------------------------------------------------------------
 # TYPICAL USE (Mullvad always on; system daemon disabled; reach out to peers)
 # ---------------------------------------------------------------------------
@@ -255,7 +260,11 @@ case "$mode" in
     fi
     AUTHKEY=""
     if [ -s "$STATEDIR/tailscaled.state" ]; then
-      echo "==> Reusing stored '$name' identity (no re-auth needed)."
+      # Registered already: the auth key is one-shot (first registration only)
+      # and is deliberately never consulted again, so deleting it is safe.
+      echo "==> Reusing stored '$name' identity (no re-auth, no auth key needed)."
+      [ -f "$HOME/.ts/${name}.key" ] && \
+        echo "    (~/.ts/${name}.key is no longer used; safe to delete.)"
     else
       # First registration for this tailnet: find a key or go interactive.
       # NOTE: TS_AUTHKEY is deliberately NOT used here, it's ambiguous across
@@ -267,6 +276,8 @@ case "$mode" in
         AUTHKEY="$(tr -d '[:space:]' < "$HOME/.ts/${name}.key")"
         echo "==> First run for '$name': using ~/.ts/${name}.key"
       else
+        [ -n "$keyfile_arg" ] && \
+          echo "==> WARNING: key file '$keyfile_arg' not found, ignoring it."
         echo "==> First run for '$name': no key file found; interactive login URL will appear."
         echo "    (Tip: save one at ~/.ts/${name}.key for unattended future runs.)"
       fi
