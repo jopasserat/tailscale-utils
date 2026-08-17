@@ -49,6 +49,9 @@
 #   ./ts-session.sh --switch [account]  Just switch the SYSTEM daemon's active
 #                              tailnet (no shell). No arg -> picker.
 #
+#   ./ts-session.sh --list     List live sessions (name, socket, SOCKS5 port)
+#                              registered by --robust/--persist runs.
+#
 #   ./ts-session.sh --robust [keyfile]  Option B, DISPOSABLE: excluded shell +
 #                              session-scoped userspace tailscaled with a
 #                              THROWAWAY state dir (deleted on exit). Re-auths
@@ -272,6 +275,26 @@ case "$mode" in
     launch_session "$name" "$STATEDIR" "$UP_ARGS" ""   # empty teardown = keep state
     ;;
 
+  --list)
+    found=0
+    for f in "$SESSION_DIR"/*.env; do
+      [ -e "$f" ] || continue
+      sock="$(sed -n 's/^TS_SOCK=//p' "$f")"
+      if [ -S "$sock" ]; then
+        printf '%-14s socks5=localhost:%-6s pid=%-8s %s\n' \
+          "$(sed -n 's/^TS_SESSION_NAME=//p' "$f")" \
+          "$(sed -n 's/^TS_SOCKS_PORT=//p' "$f")" \
+          "$(sed -n 's/^TS_SESSION_PID=//p' "$f")" \
+          "$sock"
+        found=1
+      else
+        rm -f "$f"    # stale entry from a hard-killed session
+      fi
+    done
+    [ "$found" -eq 1 ] || echo "No live sessions. Start one: $0 --persist <name>"
+    exit 0
+    ;;
+
   --check)
     account="${2:-}"
     if [ -n "$account" ]; then
@@ -311,7 +334,7 @@ RC
       exec mullvad-exclude bash
     fi
     echo "Unknown option: $mode" >&2
-    echo "Use: [account] | --check [account] | --switch [account] | --robust [keyfile] | --persist <name> [keyfile]" >&2
+    echo "Use: [account] | --check [account] | --switch [account] | --list | --robust [keyfile] | --persist <name> [keyfile]" >&2
     exit 1
     ;;
 esac

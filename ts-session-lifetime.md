@@ -86,7 +86,7 @@ ln -s "$(pwd)"/{tssh,kssh} ~/.local/bin/
 
 With several sessions live at once, pick one with `tssh -s work ...` (or
 `TS_SESSION=work`); the default is the most recently started live
-session.
+session. `./ts-session.sh --list` shows what's live.
 
 ## Switching to a second tailnet (e.g. work)
 
