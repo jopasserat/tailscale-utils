@@ -156,6 +156,16 @@ if ! command -v tailscale >/dev/null 2>&1; then
   exit 1
 fi
 
+# tailscaled usually lives in /usr/sbin, which is not on regular users' PATH
+# (the old sudo-based version found it via sudo's secure_path). Resolve it
+# explicitly; only --robust/--persist need it (checked in launch_session).
+TAILSCALED_BIN="$(command -v tailscaled || true)"
+if [ -z "$TAILSCALED_BIN" ]; then
+  for p in /usr/sbin/tailscaled /usr/local/sbin/tailscaled /sbin/tailscaled; do
+    if [ -x "$p" ]; then TAILSCALED_BIN="$p"; break; fi
+  done
+fi
+
 # --- account picker (Option A / system daemon only) ------------------------
 pick_account() {
   local want="${1:-}"
@@ -187,6 +197,11 @@ launch_session() {
   local sock="$SESSION_SOCK" log="/tmp/ts-session-$$.log"
   local envfile="${SESSION_DIR}/${name}.env"
   local socks_port
+  if [ -z "$TAILSCALED_BIN" ]; then
+    echo "ERROR: tailscaled binary not found (checked PATH, /usr/sbin," >&2
+    echo "       /usr/local/sbin, /sbin). Install tailscale first." >&2
+    exit 1
+  fi
   socks_port="$(pick_socks_port)"
   mkdir -p "$(dirname "$statedir")" "$SESSION_DIR"
   exec mullvad-exclude bash --rcfile <(cat <<RC
@@ -198,9 +213,17 @@ tssh() { command tailscale --socket="\$TS_SOCK" ssh "\$@"; }
 kssh() { command ssh -o ProxyCommand="nc -X 5 -x localhost:\$TS_SOCKS_PORT %h %p" "\$@"; }
 export -f ts tssh kssh
 echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${socks_port}, no root) ---"
-tailscaled --tun=userspace-networking --socks5-server=localhost:${socks_port} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
+"${TAILSCALED_BIN}" --tun=userspace-networking --socks5-server=localhost:${socks_port} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
 for _ in \$(seq 1 20); do [ -S "${sock}" ] && break; sleep 0.5; done
-[ -S "${sock}" ] || echo "WARNING: tailscaled socket never appeared; check ${log}"
+if [ ! -S "${sock}" ]; then
+  echo "ERROR: session tailscaled failed to start; its log says:"
+  echo "------------------------------------------------------------"
+  cat "${log}"
+  echo "------------------------------------------------------------"
+  pkill -f "tailscaled.*${sock}" 2>/dev/null
+  rm -f "${log}"
+  exit 1
+fi
 echo "Bringing Tailscale up (login URL appears only on first registration):"
 tailscale --socket="${sock}" up ${up_args}
 echo ""
@@ -222,7 +245,10 @@ RC
 
 # --- info banner -----------------------------------------------------------
 if command -v mullvad >/dev/null 2>&1; then
-  echo "==> Mullvad: $(mullvad status 2>/dev/null | head -1 || echo unknown)"
+  # sed -n 1p, not head -1: head closing the pipe early kills mullvad with
+  # SIGPIPE, which pipefail turns into a bogus "unknown" on top of real output.
+  mullvad_status="$(mullvad status 2>/dev/null | sed -n '1p')"
+  echo "==> Mullvad: ${mullvad_status:-unknown}"
 fi
 if systemctl is-active --quiet tailscaled 2>/dev/null; then
   echo "==> Note: system tailscaled is ACTIVE (inside Mullvad's tunnel). For"
