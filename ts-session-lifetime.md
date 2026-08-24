@@ -100,7 +100,7 @@ which tailnet.
    https://login.tailscale.com/admin/settings/keys
    (switch accounts in the browser if you're on your personal tailnet).
 2. Generate an auth key: Reusable ON, Ephemeral OFF. If the tailnet's policy
-   requires a tag, set it here (ask their tailnet admin which tag). Tagged nodes
+   requires a tag, set it here (ask the tailnet admin which tag). Tagged nodes
    also get key expiry disabled automatically.
 3. Save it locally, mode 600, under the name the script auto-finds:
    ```bash
@@ -113,7 +113,7 @@ which tailnet.
 ./ts-session.sh --persist work
 #   first run: registers using ~/.ts/work.key
 #   later runs: reuses the stored work identity, no re-auth
-tssh user@work-server        # Tailscale-managed auth (may do a browser check)
+tssh user@work-server             # Tailscale-managed auth (may do a browser check)
 #   or
 kssh user@100.x.y.z               # your own SSH keys, no check, use the 100.x IP
 exit                              # session ends; identity persists for next time

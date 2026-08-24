@@ -24,7 +24,7 @@ login URL on first run.)
 ## Use
 
 ```bash
-ts-session --persist work   # first run registers, later runs reuse
+ts-session --persist work        # first run registers, later runs reuse
 tssh user@peer                   # Tailscale-managed auth (web login)
 kssh user@100.x.y.z              # your own SSH keys, via SOCKS5
 ts status                        # any tailscale cmd on this session

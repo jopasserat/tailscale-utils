@@ -103,7 +103,7 @@
 #     Reusable: ON   Ephemeral: OFF   Expiry: your call   Tags: if policy needs
 #   Save each as ~/.ts/<name>.key (mode 600). This script auto-finds that path:
 #     install -m 600 /dev/stdin ~/.ts/home.key       # paste key, Ctrl-D
-#     install -m 600 /dev/stdin ~/.ts/work.key  # paste key, Ctrl-D
+#     install -m 600 /dev/stdin ~/.ts/work.key       # paste key, Ctrl-D
 #
 # SECURITY: never pass the raw key as an argument (it lands in shell history).
 # Use a key file (auto-found at ~/.ts/<name>.key, or pass a path) or TS_AUTHKEY.
