@@ -42,6 +42,10 @@ prompt. The trade-off: this machine can't accept inbound `tailscale ssh`
 during a session — outbound only. If you ever need inbound, the header of
 `ts-session.sh` describes the path back to a root daemon.
 
+## License
+
+[GPLv3](LICENSE).
+
 ## Files
 
 - `ts-session.sh` — session launcher (all modes documented in its header)
