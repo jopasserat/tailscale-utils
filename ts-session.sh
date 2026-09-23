@@ -50,6 +50,10 @@
 # so other nodes can't `tailscale ssh` INTO this machine during a session.
 # Reaching OUT (tssh/kssh to peers) is unaffected, which is the use case here.
 #
+# The session also comes up with --shields-up, which blocks ALL inbound
+# connections (not just SSH) regardless of the tailnet's ACL. Turn it off for
+# one session with: ts set --shields-up=false
+#
 # GOING BACK TO ROOT (if you ever need inbound Tailscale SSH): in
 # launch_session(), prefix the `tailscaled`, `tailscale ... up`, and the
 # trap's `tailscale ... down`/`pkill` with sudo, and hand the state dirs to
@@ -225,7 +229,7 @@ if [ ! -S "${sock}" ]; then
   exit 1
 fi
 echo "Bringing Tailscale up (login URL appears only on first registration):"
-tailscale --socket="${sock}" up ${up_args}
+tailscale --socket="${sock}" up --shields-up ${up_args}
 echo ""
 tailscale --socket="${sock}" status || true
 printf 'TS_SESSION_NAME=%s\nTS_SOCK=%s\nTS_SOCKS_PORT=%s\nTS_SESSION_PID=%s\n' \
@@ -409,5 +413,8 @@ esac
 # running the system daemon 24/7 (inside the tunnel, blackholed) buys nothing.
 # Disable it, then use --persist (or --robust):
 #   sudo systemctl disable --now tailscaled
-# Trade-off: incoming connections TO this laptop won't work while idle. That's
-# fine for reaching OUT (home / work). Re-enable if you ever need inbound.
+# Trade-off: incoming connections TO this laptop won't work while idle, and
+# the session daemon itself comes up --shields-up (see the LIMITATION note
+# above), so inbound is blocked whenever a session is live too. That's fine
+# for reaching OUT (home / work). Re-enable the system daemon, or
+# `ts set --shields-up=false`, if you ever need inbound.

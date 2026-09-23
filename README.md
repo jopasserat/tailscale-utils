@@ -39,8 +39,11 @@ comments in `ts-session.sh` cover all modes.
 The session daemon runs **as your user** (userspace networking needs no
 root): no sudo password, and teardown can't be stranded by an expired sudo
 prompt. The trade-off: this machine can't accept inbound `tailscale ssh`
-during a session — outbound only. If you ever need inbound, the header of
-`ts-session.sh` describes the path back to a root daemon.
+during a session — outbound only. The session also comes up `--shields-up`,
+blocking all other inbound connections too, regardless of the tailnet's ACL
+(`ts set --shields-up=false` to lift it for one session). If you ever need
+inbound, the header of `ts-session.sh` describes the path back to a root
+daemon.
 
 ## License
 
