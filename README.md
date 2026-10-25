@@ -45,6 +45,35 @@ blocking all other inbound connections too, regardless of the tailnet's ACL
 inbound, the header of `ts-session.sh` describes the path back to a root
 daemon.
 
+## Boot persistence (machine has no login session, e.g. a headless box)
+
+`--persist` needs a shell to stay open. For a machine that must join the
+tailnet at boot with nobody logged in, use `--boot` instead, under systemd:
+
+```bash
+# once, interactively, to register the identity (there's no browser at boot):
+ts-session --persist home
+
+# then install the unit (fill in User= and the ExecStart path first):
+sudo cp ts-session@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ts-session@home.service
+journalctl -u ts-session@home -f
+```
+
+Same identity and state dir as `--persist`, just no interactive shell.
+`tssh`/`kssh` from any terminal on that box find it the same way. Unlike
+`--persist`, `--boot` does **not** set shields-up — the point of putting a
+machine on the fleet is being reachable from elsewhere, so it accepts
+inbound (subject to your tailnet's ACL). Only use this on a machine that
+also runs Mullvad (or another VPN with its own `mullvad-exclude`-equivalent
+cgroup exclusion) and needs the same exclusion trick; a plain machine just
+needs stock `tailscale up`.
+
+To confirm a `--boot` machine actually joined, don't use `ts-session --list`
+— that only shows sessions live **on the host you run it from**. Check with
+`ts status` from any live session, or the admin console's Machines list.
+
 ## License
 
 [GPLv3](LICENSE).
@@ -52,6 +81,7 @@ daemon.
 ## Files
 
 - `ts-session.sh` — session launcher (all modes documented in its header)
+- `ts-session@.service` — systemd unit template for `--boot` (headless/boot persistence)
 - `tssh` / `kssh` — standalone ssh helpers, session auto-discovery
 - `ts-session-lib.sh` — shared discovery lib
 - `ts-session-lifetime.md` — what persists between sessions, key expiry, per-tailnet setup
