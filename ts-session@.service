@@ -1,0 +1,18 @@
+[Unit]
+Description=ts-session (Mullvad-excluded Tailscale), tailnet '%i'
+After=network-online.target mullvad-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Fill these in, then: sudo cp ts-session@.service /etc/systemd/system/
+User=CHANGEME
+ExecStart=/home/CHANGEME/.local/bin/ts-session --boot %i
+# SIGTERM to this script only (so its trap can `tailscale down` cleanly);
+# SIGKILL to the rest of the cgroup only after TimeoutStopSec if needed.
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
