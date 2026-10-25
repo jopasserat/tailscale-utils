@@ -94,9 +94,24 @@
 #                              persistent identity. This is the one for "ssh to
 #                              home or work, repeatedly, with Mullvad on".
 #
+#   ./ts-session.sh --boot <name> [keyfile]
+#                              Same identity/state as --persist, but with no
+#                              interactive shell: runs tailscaled in the
+#                              foreground and tears down on SIGTERM/SIGINT
+#                              instead of on shell exit. For a systemd unit,
+#                              so a Mullvad+Tailscale machine without a login
+#                              session still joins the tailnet at boot. See
+#                              ts-session@.service. Register the identity
+#                              first (a --persist run, or a saved key file) --
+#                              there's no browser at boot for a first login.
+#                              UNLIKE --persist, this does NOT set shields-up:
+#                              a --boot machine exists to be reachable FROM
+#                              elsewhere (ssh'd into from the laptop), so it
+#                              accepts inbound subject to the tailnet ACL.
+#
 # DISPOSABLE vs PERSISTENT: --robust leaves no trace (ephemeral key + /tmp state
-# wiped on exit). --persist registers each tailnet once and reappears as the
-# same stable node every time (non-ephemeral key + kept state). Different
+# wiped on exit). --persist/--boot register each tailnet once and reappear as
+# the same stable node every time (non-ephemeral key + kept state). Different
 # tailnets = different <name> = different state dir.
 #
 # ---------------------------------------------------------------------------
@@ -194,6 +209,52 @@ pick_account() {
   fi
 }
 
+# --- resolve state dir + auth key for a persisted (named) identity ---------
+# Shared by --persist (interactive) and --boot (systemd). Sets STATEDIR and
+# AUTHKEY as globals; exits 1 on an unrecoverable problem.
+resolve_persist() {
+  local name="$1" keyfile_arg="$2"
+  STATEDIR="$HOME/.config/ts-session/${name}-state"
+  # Two daemons on one statedir end badly; point at the live session instead.
+  if [ -e "$SESSION_DIR/${name}.env" ] &&
+     [ -S "$(sed -n 's/^TS_SOCK=//p' "$SESSION_DIR/${name}.env")" ]; then
+    echo "==> WARNING: a '$name' session already looks LIVE. Instead of a second"
+    echo "    session, just run tssh/kssh from this terminal, they'll find it."
+  fi
+  # Migration from the old sudo-based version: root-owned state would make
+  # the user-run tailscaled fail (or worse, silently re-register).
+  if [ -e "$STATEDIR" ] && [ ! -O "$STATEDIR" ]; then
+    echo "==> '$name' state dir is not owned by you (left by the old sudo-based" >&2
+    echo "    version of this script). Reclaim it once, then re-run:" >&2
+    echo "        sudo chown -R \"\$USER\" '$STATEDIR'" >&2
+    exit 1
+  fi
+  AUTHKEY=""
+  if [ -s "$STATEDIR/tailscaled.state" ]; then
+    # Registered already: the auth key is one-shot (first registration only)
+    # and is deliberately never consulted again, so deleting it is safe.
+    echo "==> Reusing stored '$name' identity (no re-auth, no auth key needed)."
+    [ -f "$HOME/.ts/${name}.key" ] && \
+      echo "    (~/.ts/${name}.key is no longer used; safe to delete.)"
+  else
+    # First registration for this tailnet: find a key or go interactive.
+    # NOTE: TS_AUTHKEY is deliberately NOT used here, it's ambiguous across
+    # tailnets; per-name key files avoid registering with the wrong account.
+    if [ -n "$keyfile_arg" ] && [ -f "$keyfile_arg" ]; then
+      AUTHKEY="$(tr -d '[:space:]' < "$keyfile_arg")"
+      echo "==> First run for '$name': using key file $keyfile_arg"
+    elif [ -f "$HOME/.ts/${name}.key" ]; then
+      AUTHKEY="$(tr -d '[:space:]' < "$HOME/.ts/${name}.key")"
+      echo "==> First run for '$name': using ~/.ts/${name}.key"
+    else
+      [ -n "$keyfile_arg" ] && \
+        echo "==> WARNING: key file '$keyfile_arg' not found, ignoring it."
+      echo "==> First run for '$name': no key file found; interactive login URL will appear."
+      echo "    (Tip: save one at ~/.ts/${name}.key for unattended future runs.)"
+    fi
+  fi
+}
+
 # --- launch an excluded userspace Tailscale session ------------------------
 # args: <name> <statedir> <up_args> <teardown_state_cmd>
 launch_session() {
@@ -243,6 +304,64 @@ echo "===================================================================="
 echo ""
 echo "Type 'exit' when done; the session tailscaled is stopped automatically."
 trap 'echo "--- tearing down session tailscaled ---"; tailscale --socket="${sock}" down 2>/dev/null; pkill -f "tailscaled.*${sock}" 2>/dev/null; rm -f "${sock}" "${log}" "${envfile}"; ${teardown_state}' EXIT
+RC
+)
+}
+
+# --- same, but non-interactive for a systemd unit (--boot) -----------------
+# No shell for a human to sit in: runs tailscaled in the foreground and tears
+# down on SIGTERM/SIGINT (what systemd sends on stop) instead of an
+# interactive shell's EXIT. Kept separate from launch_session() rather than
+# merged: the two heredocs quote very differently (--rcfile vs a plain
+# script), so sharing them would cost more than the ~15 duplicated lines.
+# State always persists (like --persist); there's no disposable boot mode.
+# args: <name> <statedir> <up_args>
+launch_session_boot() {
+  local name="$1" statedir="$2" up_args="$3"
+  local sock="$SESSION_SOCK" log="/tmp/ts-session-$$.log"
+  local envfile="${SESSION_DIR}/${name}.env"
+  local socks_port
+  if [ -z "$TAILSCALED_BIN" ]; then
+    echo "ERROR: tailscaled binary not found (checked PATH, /usr/sbin," >&2
+    echo "       /usr/local/sbin, /sbin). Install tailscale first." >&2
+    exit 1
+  fi
+  socks_port="$(pick_socks_port)"
+  mkdir -p "$(dirname "$statedir")" "$SESSION_DIR"
+  exec mullvad-exclude bash <(cat <<RC
+set -u
+echo "--- starting session-scoped tailscaled (userspace, SOCKS5 on ${socks_port}, no root) ---"
+"${TAILSCALED_BIN}" --tun=userspace-networking --socks5-server=localhost:${socks_port} --socket="${sock}" --statedir="${statedir}" >"${log}" 2>&1 &
+TAILSCALED_PID=\$!
+for _ in \$(seq 1 20); do [ -S "${sock}" ] && break; sleep 0.5; done
+if [ ! -S "${sock}" ]; then
+  echo "ERROR: session tailscaled failed to start; its log says:"
+  cat "${log}"
+  exit 1
+fi
+echo "Bringing Tailscale up (first run with no auth key: grab the login URL from"
+echo "this unit's journal and open it once -- journalctl -u ts-session@${name}):"
+# Explicit --shields-up=false, not just omitted: unlike launch_session(),
+# --boot exists to make this machine reachable FROM elsewhere (the whole
+# point of a fleet member). 'tailscale up' refuses to silently drop a
+# previously-set non-default flag (it errors asking you to restate it), so
+# if this identity was ever brought up with shields-up=true -- e.g. it was
+# first registered via --persist before this got added -- merely omitting
+# the flag here would leave shields-up stuck on and 'up' would no-op.
+tailscale --socket="${sock}" up --shields-up=false ${up_args}
+tailscale --socket="${sock}" status || true
+printf 'TS_SESSION_NAME=%s\nTS_SOCK=%s\nTS_SOCKS_PORT=%s\nTS_SESSION_PID=%s\n' \
+  "${name}" "${sock}" "${socks_port}" "\$\$" > "${envfile}"
+echo "--- '${name}' session up; tssh/kssh work from any terminal on this box now ---"
+teardown() {
+  echo "--- tearing down session tailscaled (signal received) ---"
+  tailscale --socket="${sock}" down 2>/dev/null
+  kill "\$TAILSCALED_PID" 2>/dev/null
+  rm -f "${sock}" "${log}" "${envfile}"
+  exit 0
+}
+trap teardown TERM INT
+wait "\$TAILSCALED_PID"
 RC
 )
 }
@@ -298,48 +417,23 @@ case "$mode" in
   --persist)
     name="${2:-default}"
     keyfile_arg="${3:-}"
-    STATEDIR="$HOME/.config/ts-session/${name}-state"
+    resolve_persist "$name" "$keyfile_arg"
     echo "==> PERSIST mode: tailnet '$name', state kept at $STATEDIR"
-    # Two daemons on one statedir end badly; point at the live session instead.
-    if [ -e "$SESSION_DIR/${name}.env" ] &&
-       [ -S "$(sed -n 's/^TS_SOCK=//p' "$SESSION_DIR/${name}.env")" ]; then
-      echo "==> WARNING: a '$name' session already looks LIVE. Instead of a second"
-      echo "    session, just run tssh/kssh from this terminal, they'll find it."
-    fi
-    # Migration from the old sudo-based version: root-owned state would make
-    # the user-run tailscaled fail (or worse, silently re-register).
-    if [ -e "$STATEDIR" ] && [ ! -O "$STATEDIR" ]; then
-      echo "==> '$name' state dir is not owned by you (left by the old sudo-based" >&2
-      echo "    version of this script). Reclaim it once, then re-run:" >&2
-      echo "        sudo chown -R \"\$USER\" '$STATEDIR'" >&2
-      exit 1
-    fi
-    AUTHKEY=""
-    if [ -s "$STATEDIR/tailscaled.state" ]; then
-      # Registered already: the auth key is one-shot (first registration only)
-      # and is deliberately never consulted again, so deleting it is safe.
-      echo "==> Reusing stored '$name' identity (no re-auth, no auth key needed)."
-      [ -f "$HOME/.ts/${name}.key" ] && \
-        echo "    (~/.ts/${name}.key is no longer used; safe to delete.)"
-    else
-      # First registration for this tailnet: find a key or go interactive.
-      # NOTE: TS_AUTHKEY is deliberately NOT used here, it's ambiguous across
-      # tailnets; per-name key files avoid registering with the wrong account.
-      if [ -n "$keyfile_arg" ] && [ -f "$keyfile_arg" ]; then
-        AUTHKEY="$(tr -d '[:space:]' < "$keyfile_arg")"
-        echo "==> First run for '$name': using key file $keyfile_arg"
-      elif [ -f "$HOME/.ts/${name}.key" ]; then
-        AUTHKEY="$(tr -d '[:space:]' < "$HOME/.ts/${name}.key")"
-        echo "==> First run for '$name': using ~/.ts/${name}.key"
-      else
-        [ -n "$keyfile_arg" ] && \
-          echo "==> WARNING: key file '$keyfile_arg' not found, ignoring it."
-        echo "==> First run for '$name': no key file found; interactive login URL will appear."
-        echo "    (Tip: save one at ~/.ts/${name}.key for unattended future runs.)"
-      fi
-    fi
     UP_ARGS=""; [ -n "$AUTHKEY" ] && UP_ARGS="--auth-key=${AUTHKEY}"
     launch_session "$name" "$STATEDIR" "$UP_ARGS" ""   # empty teardown = keep state
+    ;;
+
+  --boot)
+    name="${2:-}"
+    keyfile_arg="${3:-}"
+    if [ -z "$name" ]; then
+      echo "Usage: $0 --boot <name> [keyfile]" >&2
+      exit 1
+    fi
+    resolve_persist "$name" "$keyfile_arg"
+    echo "==> BOOT mode: non-interactive '$name' session for a systemd unit, state kept at $STATEDIR"
+    UP_ARGS=""; [ -n "$AUTHKEY" ] && UP_ARGS="--auth-key=${AUTHKEY}"
+    launch_session_boot "$name" "$STATEDIR" "$UP_ARGS"
     ;;
 
   --list)
@@ -401,7 +495,7 @@ RC
       exec mullvad-exclude bash
     fi
     echo "Unknown option: $mode" >&2
-    echo "Use: [account] | --check [account] | --switch [account] | --list | --robust [keyfile] | --persist <name> [keyfile]" >&2
+    echo "Use: [account] | --check [account] | --switch [account] | --list | --robust [keyfile] | --persist <name> [keyfile] | --boot <name> [keyfile]" >&2
     exit 1
     ;;
 esac
